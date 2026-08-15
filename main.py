@@ -6,10 +6,11 @@ import os
 import sys
 
 try:
-    import tls_client
+    from curl_cffi import requests as curl_requests
 except ImportError:
-    print("ERROR: tls-client not installed. Please add 'tls-client' to requirements.txt")
-    sys.exit(1)
+    print("Installing curl_cffi...")
+    os.system("pip install curl_cffi")
+    from curl_cffi import requests as curl_requests
 
 try:
     from colorama import Fore, Style, init
@@ -74,8 +75,8 @@ def build_headers():
         "Connection": "keep-alive",
     }
 
-def set_status(session, headers):
-    """Sets the user's status and custom activity using a TLS-spoofed session."""
+def set_status():
+    """Sets the user's status using curl_cffi which mimics browser TLS."""
     status_payload = {
         "status": STATUS,
         "custom_status": {
@@ -84,11 +85,13 @@ def set_status(session, headers):
     }
 
     try:
-        response = session.patch(
+        # Use curl_cffi with impersonate to mimic Chrome
+        response = curl_requests.patch(
             "https://discord.com/api/v9/users/@me/settings",
-            headers=headers,
             json=status_payload,
-            timeout=15
+            headers=build_headers(),
+            timeout=15,
+            impersonate="chrome126"
         )
 
         if response.status_code == 200:
@@ -108,6 +111,30 @@ def set_status(session, headers):
         print(f"{Fore.RED}[-] An error occurred: {e}")
         return False
 
+def heartbeat():
+    """Performs a heartbeat request to keep the account online."""
+    try:
+        response = curl_requests.get(
+            "https://discord.com/api/v9/users/@me",
+            headers=build_headers(),
+            timeout=10,
+            impersonate="chrome126"
+        )
+
+        if response.status_code == 200:
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{Fore.GREEN}[{current_time}] Heartbeat successful.")
+            return True
+        else:
+            print(f"{Fore.RED}[-] Heartbeat failed. Status Code: {response.status_code}")
+            if response.status_code == 401:
+                print(f"{Fore.RED}[!] Token is invalid or expired. Please check DISCORD_TOKEN")
+            return False
+
+    except Exception as e:
+        print(f"{Fore.RED}[-] Heartbeat error: {e}")
+        return False
+
 def human_like_delay():
     """Adds a random, human-like delay between 1100ms and 3500ms to avoid rate limiting."""
     delay = random.uniform(1.1, 3.5)
@@ -123,28 +150,8 @@ def main():
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
     print(f"{Fore.CYAN}[*] Python Version: {sys.version}")
 
-    # Initialize a TLS session that mimics Chrome
-    try:
-        session = tls_client.Session(
-            client_identifier="chrome_126",
-            random_tls_extension_order=True
-        )
-    except Exception as e:
-        print(f"{Fore.RED}[-] Failed to initialize TLS session: {e}")
-        print(f"{Fore.YELLOW}[!] Trying fallback with chrome_124...")
-        try:
-            session = tls_client.Session(
-                client_identifier="chrome_124",
-                random_tls_extension_order=True
-            )
-        except Exception as e2:
-            print(f"{Fore.RED}[-] All TLS attempts failed: {e2}")
-            sys.exit(1)
-
-    headers = build_headers()
-
     # Initial status set
-    if set_status(session, headers):
+    if set_status():
         print(f"{Fore.GREEN}[+] Bot is now operational. Staying online...")
     else:
         print(f"{Fore.RED}[-] Failed to start. Check your token and network.")
@@ -159,45 +166,14 @@ def main():
         while True:
             human_like_delay()
 
-            # Slight header rotation to appear more human
-            headers = build_headers()
-
-            # Perform a benign, undetectable action: fetch user's own settings
-            try:
-                response = session.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=10)
-
-                if response.status_code == 200:
-                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"{Fore.GREEN}[{current_time}] Heartbeat successful.")
-                    retry_count = 0
-                else:
-                    print(f"{Fore.RED}[-] Heartbeat failed. Status Code: {response.status_code}")
-                    retry_count += 1
-                    
-                    # If we get 401, token is invalid
-                    if response.status_code == 401:
-                        print(f"{Fore.RED}[!] Token is invalid or expired. Please check DISCORD_TOKEN")
-                        time.sleep(60)
-                        continue
-                    
-                    # Rebuild headers on repeated failures
-                    if retry_count > 3:
-                        print(f"{Fore.YELLOW}[!] Multiple failures, rebuilding headers...")
-                        headers = build_headers()
-                        retry_count = 0
-
-            except Exception as e:
-                print(f"{Fore.RED}[-] Heartbeat error: {e}")
+            if heartbeat():
+                retry_count = 0
+            else:
                 retry_count += 1
+                
+                # Rebuild headers on repeated failures
                 if retry_count > 3:
-                    print(f"{Fore.YELLOW}[!] Multiple errors, reinitializing session...")
-                    try:
-                        session = tls_client.Session(
-                            client_identifier="chrome_126",
-                            random_tls_extension_order=True
-                        )
-                    except:
-                        pass
+                    print(f"{Fore.YELLOW}[!] Multiple failures, refreshing state...")
                     retry_count = 0
 
     except KeyboardInterrupt:
