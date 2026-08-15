@@ -2,25 +2,39 @@ import json
 import base64
 import random
 import time
-import tls_client
 import os
-from colorama import Fore, Style, init
+import sys
 
-init(autoreset=True)
+try:
+    import tls_client
+except ImportError:
+    print("ERROR: tls-client not installed. Please add 'tls-client' to requirements.txt")
+    sys.exit(1)
+
+try:
+    from colorama import Fore, Style, init
+    init(autoreset=True)
+except ImportError:
+    # Fallback if colorama is not installed
+    class Fore:
+        RED = '\033[91m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        CYAN = '\033[96m'
+    Style = None
+    def init():
+        pass
 
 # ----------------- CONFIGURATION -----------------
-# Get token and status from environment variables
 TOKEN = os.environ.get("DISCORD_TOKEN")
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
-
-# Fixed settings (no emoji)
 STATUS = "online"  # online, idle, dnd
 # -------------------------------------------------
 
-# Validate token is present
 if not TOKEN:
     print(f"{Fore.RED}[!] ERROR: DISCORD_TOKEN environment variable not set!")
-    exit(1)
+    print(f"{Fore.YELLOW}[!] Please set DISCORD_TOKEN in Render environment variables")
+    sys.exit(1)
 
 def generate_super_properties():
     """Generates a dynamic X-Super-Properties header to mimic a real browser client."""
@@ -66,7 +80,6 @@ def set_status(session, headers):
         "status": STATUS,
         "custom_status": {
             "text": CUSTOM_STATUS_TEXT
-            # No emoji field included
         }
     }
 
@@ -85,7 +98,10 @@ def set_status(session, headers):
             return True
         else:
             print(f"{Fore.RED}[-] Failed to update status. Status Code: {response.status_code}")
-            print(f"{Fore.YELLOW}[!] Response: {response.text}")
+            try:
+                print(f"{Fore.YELLOW}[!] Response: {response.text}")
+            except:
+                pass
             return False
 
     except Exception as e:
@@ -101,15 +117,29 @@ def main():
     print(f"{Fore.YELLOW}[*] Initializing Anti-Detection Self-Bot...")
     
     # Show current configuration (mask token)
-    masked_token = TOKEN[:10] + "..." + TOKEN[-10:] if len(TOKEN) > 20 else "***"
-    print(f"{Fore.CYAN}[*] Token: {masked_token}")
+    if TOKEN:
+        masked_token = TOKEN[:10] + "..." + TOKEN[-10:] if len(TOKEN) > 20 else "***"
+        print(f"{Fore.CYAN}[*] Token: {masked_token}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
+    print(f"{Fore.CYAN}[*] Python Version: {sys.version}")
 
     # Initialize a TLS session that mimics Chrome
-    session = tls_client.Session(
-        client_identifier="chrome_126",
-        random_tls_extension_order=True
-    )
+    try:
+        session = tls_client.Session(
+            client_identifier="chrome_126",
+            random_tls_extension_order=True
+        )
+    except Exception as e:
+        print(f"{Fore.RED}[-] Failed to initialize TLS session: {e}")
+        print(f"{Fore.YELLOW}[!] Trying fallback with chrome_124...")
+        try:
+            session = tls_client.Session(
+                client_identifier="chrome_124",
+                random_tls_extension_order=True
+            )
+        except Exception as e2:
+            print(f"{Fore.RED}[-] All TLS attempts failed: {e2}")
+            sys.exit(1)
 
     headers = build_headers()
 
@@ -118,11 +148,13 @@ def main():
         print(f"{Fore.GREEN}[+] Bot is now operational. Staying online...")
     else:
         print(f"{Fore.RED}[-] Failed to start. Check your token and network.")
-        return
+        print(f"{Fore.YELLOW}[!] Will retry in 30 seconds...")
+        time.sleep(30)
 
     print(f"{Fore.YELLOW}[!] Press CTRL+C to stop the bot.")
 
     # Keep the account online with periodic, randomized activity
+    retry_count = 0
     try:
         while True:
             human_like_delay()
@@ -131,15 +163,42 @@ def main():
             headers = build_headers()
 
             # Perform a benign, undetectable action: fetch user's own settings
-            response = session.get("https://discord.com/api/v9/users/@me", headers=headers)
+            try:
+                response = session.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=10)
 
-            if response.status_code == 200:
-                current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                print(f"{Fore.GREEN}[{current_time}] Heartbeat successful.")
-            else:
-                print(f"{Fore.RED}[-] Heartbeat failed. Status Code: {response.status_code}")
-                # Attempt to re-authenticate by refreshing headers
-                headers = build_headers()
+                if response.status_code == 200:
+                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"{Fore.GREEN}[{current_time}] Heartbeat successful.")
+                    retry_count = 0
+                else:
+                    print(f"{Fore.RED}[-] Heartbeat failed. Status Code: {response.status_code}")
+                    retry_count += 1
+                    
+                    # If we get 401, token is invalid
+                    if response.status_code == 401:
+                        print(f"{Fore.RED}[!] Token is invalid or expired. Please check DISCORD_TOKEN")
+                        time.sleep(60)
+                        continue
+                    
+                    # Rebuild headers on repeated failures
+                    if retry_count > 3:
+                        print(f"{Fore.YELLOW}[!] Multiple failures, rebuilding headers...")
+                        headers = build_headers()
+                        retry_count = 0
+
+            except Exception as e:
+                print(f"{Fore.RED}[-] Heartbeat error: {e}")
+                retry_count += 1
+                if retry_count > 3:
+                    print(f"{Fore.YELLOW}[!] Multiple errors, reinitializing session...")
+                    try:
+                        session = tls_client.Session(
+                            client_identifier="chrome_126",
+                            random_tls_extension_order=True
+                        )
+                    except:
+                        pass
+                    retry_count = 0
 
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}[!] Bot stopped by user.")
