@@ -33,7 +33,7 @@ threading.Thread(target=run_http_server, daemon=True).start()
 # Cargar TOKEN de las variables de entorno de Render
 TOKEN = os.getenv("TOKEN")
 STATUS = os.getenv("STATUS", "online")
-CUSTOM_STATUS = os.getenv("CUSTOM_STATUS", "Hey!")
+CUSTOM_STATUS = os.getenv("CUSTOM_STATUS", "✅ 1.5$ Rust, cheatvault.net")
 
 if not TOKEN:
     print("Error: Falta la variable TOKEN en las configuraciones de Render.")
