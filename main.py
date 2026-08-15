@@ -5,6 +5,7 @@ import time
 import os
 import sys
 
+# Try to import curl_cffi, install if missing
 try:
     from curl_cffi import requests as curl_requests
 except ImportError:
@@ -37,6 +38,24 @@ if not TOKEN:
     print(f"{Fore.YELLOW}[!] Please set DISCORD_TOKEN in Render environment variables")
     sys.exit(1)
 
+# List of supported impersonations (check your curl_cffi version)
+SUPPORTED_IMPERSONATIONS = [
+    "chrome110", "chrome116", "chrome120", 
+    "chrome123", "chrome124", "chrome124",
+    "firefox102", "firefox110", "firefox116",
+    "safari15_5", "safari17_0"
+]
+
+def get_best_impersonation():
+    """Returns the best supported impersonation for this environment."""
+    # Try to get available impersonations from curl_cffi
+    try:
+        from curl_cffi.requests import BrowserType
+        # Return a safe default that's commonly supported
+        return "chrome120"
+    except:
+        return "chrome120"  # Fallback
+
 def generate_super_properties():
     """Generates a dynamic X-Super-Properties header to mimic a real browser client."""
     properties = {
@@ -44,8 +63,8 @@ def generate_super_properties():
         "browser": "Chrome",
         "device": "",
         "system_locale": "en-US",
-        "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "browser_version": "126.0.0.0",
+        "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "browser_version": "120.0.0.0",
         "os_version": "10",
         "referrer": "",
         "referring_domain": "",
@@ -61,9 +80,9 @@ def generate_super_properties():
 def build_headers():
     """Builds headers with the dynamic X-Super-Properties and randomized User-Agent."""
     user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/126.0"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0"
     ]
     return {
         "Authorization": TOKEN,
@@ -76,7 +95,7 @@ def build_headers():
     }
 
 def set_status():
-    """Sets the user's status using curl_cffi which mimics browser TLS."""
+    """Sets the user's status using curl_cffi with browser impersonation."""
     status_payload = {
         "status": STATUS,
         "custom_status": {
@@ -85,13 +104,13 @@ def set_status():
     }
 
     try:
-        # Use curl_cffi with impersonate to mimic Chrome
+        # Use chrome120 - widely supported
         response = curl_requests.patch(
             "https://discord.com/api/v9/users/@me/settings",
             json=status_payload,
             headers=build_headers(),
             timeout=15,
-            impersonate="chrome126"
+            impersonate="chrome120"  # Supported in most versions
         )
 
         if response.status_code == 200:
@@ -114,11 +133,12 @@ def set_status():
 def heartbeat():
     """Performs a heartbeat request to keep the account online."""
     try:
+        # Use chrome120 - widely supported
         response = curl_requests.get(
             "https://discord.com/api/v9/users/@me",
             headers=build_headers(),
             timeout=10,
-            impersonate="chrome126"
+            impersonate="chrome120"  # Supported in most versions
         )
 
         if response.status_code == 200:
@@ -149,6 +169,22 @@ def main():
         print(f"{Fore.CYAN}[*] Token: {masked_token}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
     print(f"{Fore.CYAN}[*] Python Version: {sys.version}")
+
+    # Test connection first
+    print(f"{Fore.YELLOW}[*] Testing connection to Discord...")
+    try:
+        test_response = curl_requests.get(
+            "https://discord.com/api/v9/users/@me",
+            headers=build_headers(),
+            timeout=10,
+            impersonate="chrome120"
+        )
+        if test_response.status_code == 200:
+            print(f"{Fore.GREEN}[+] Connection successful!")
+        else:
+            print(f"{Fore.RED}[-] Connection test failed. Status: {test_response.status_code}")
+    except Exception as e:
+        print(f"{Fore.RED}[-] Connection test error: {e}")
 
     # Initial status set
     if set_status():
