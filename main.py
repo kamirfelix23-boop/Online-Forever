@@ -142,6 +142,39 @@ def human_like_delay():
     delay = random.uniform(1.1, 3.5)
     time.sleep(delay)
 
+# ----------------- WEB SERVER FOR RENDER (REQUIRED) -----------------
+class HealthHandler(BaseHTTPRequestHandler):
+    """Simple HTTP handler that responds to health checks"""
+    
+    def do_GET(self):
+        """Handle GET requests - respond with status"""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        
+        # Return a simple status message
+        status_msg = f"Discord Self-Bot Running\nStatus: Online\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        self.wfile.write(status_msg.encode())
+    
+    def do_HEAD(self):
+        """Handle HEAD requests - just respond with 200"""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        """Suppress web server logs to keep console clean"""
+        pass
+
+def run_web_server():
+    """Runs a web server on the port Render expects"""
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"{Fore.CYAN}[*] Web server running on port {port}")
+    print(f"{Fore.CYAN}[*] Health check available at: http://0.0.0.0:{port}/")
+    server.serve_forever()
+
+# ----------------- MAIN BOT FUNCTION -----------------
 def run_bot():
     """Main bot loop"""
     print(f"{Fore.YELLOW}[*] Initializing Anti-Detection Self-Bot...")
@@ -194,28 +227,12 @@ def run_bot():
     except Exception as e:
         print(f"{Fore.RED}[-] Fatal error: {e}")
 
-# ----------------- WEB SERVER FOR RENDER -----------------
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Discord Self-Bot is running")
-    
-    def log_message(self, format, *args):
-        pass  # Suppress web server logs
-
-def run_web_server():
-    """Runs a minimal web server to satisfy Render's requirements"""
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"{Fore.CYAN}[*] Web server running on port {port}")
-    server.serve_forever()
-
-# Start the web server in a background thread
-web_thread = Thread(target=run_web_server, daemon=True)
-web_thread.start()
-print(f"{Fore.CYAN}[*] Web server thread started")
-
-# Run the bot in the main thread
+# ----------------- STARTUP -----------------
 if __name__ == "__main__":
+    # Start web server in background thread
+    web_thread = Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    print(f"{Fore.CYAN}[*] Web server thread started")
+    
+    # Run the bot in the main thread
     run_bot()
