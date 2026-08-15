@@ -6,29 +6,28 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import websockets
 
-# Servidor HTTP en segundo plano para engañar al Web Service de Render
+# Servidor HTTP basico para que Render mantenga el Web Service ACTIVO
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Online 24/7 Running!")
+        self.wfile.write(b"Bot 24/7 de Discord Activo")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# Iniciar servidor HTTP en un thread separado
+# Iniciamos el servidor en segundo plano
 threading.Thread(target=run_http_server, daemon=True).start()
 
-# Lectura segura del TOKEN desde las variables de entorno de Render
+# Cargar TOKEN de las variables de entorno de Render
 TOKEN = os.getenv("TOKEN")
-STATUS = os.getenv("STATUS", "online")  # online / dnd / idle
+STATUS = os.getenv("STATUS", "online")
 CUSTOM_STATUS = os.getenv("CUSTOM_STATUS", "Hey!")
-USE_EMOJI = False
 
 if not TOKEN:
-    print("Error: No se encontró la variable de entorno 'TOKEN'. Agrégala en Render.")
+    print("Error: Falta la variable TOKEN en las configuraciones de Render.")
     exit(1)
 
 headers = {"Authorization": TOKEN}
@@ -47,13 +46,6 @@ activity = {
     "state": CUSTOM_STATUS,
     "id": "custom"
 }
-
-if USE_EMOJI:
-    activity["emoji"] = {
-        "name": "🔥",
-        "id": None,
-        "animated": False
-    }
 
 async def discord_gateway():
     uri = "wss://gateway.discord.gg/?v=10&encoding=json"
