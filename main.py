@@ -4,6 +4,8 @@ import random
 import time
 import os
 import sys
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Try to import curl_cffi, install if missing
 try:
@@ -37,24 +39,6 @@ if not TOKEN:
     print(f"{Fore.RED}[!] ERROR: DISCORD_TOKEN environment variable not set!")
     print(f"{Fore.YELLOW}[!] Please set DISCORD_TOKEN in Render environment variables")
     sys.exit(1)
-
-# List of supported impersonations (check your curl_cffi version)
-SUPPORTED_IMPERSONATIONS = [
-    "chrome110", "chrome116", "chrome120", 
-    "chrome123", "chrome124", "chrome124",
-    "firefox102", "firefox110", "firefox116",
-    "safari15_5", "safari17_0"
-]
-
-def get_best_impersonation():
-    """Returns the best supported impersonation for this environment."""
-    # Try to get available impersonations from curl_cffi
-    try:
-        from curl_cffi.requests import BrowserType
-        # Return a safe default that's commonly supported
-        return "chrome120"
-    except:
-        return "chrome120"  # Fallback
 
 def generate_super_properties():
     """Generates a dynamic X-Super-Properties header to mimic a real browser client."""
@@ -104,13 +88,12 @@ def set_status():
     }
 
     try:
-        # Use chrome120 - widely supported
         response = curl_requests.patch(
             "https://discord.com/api/v9/users/@me/settings",
             json=status_payload,
             headers=build_headers(),
             timeout=15,
-            impersonate="chrome120"  # Supported in most versions
+            impersonate="chrome120"
         )
 
         if response.status_code == 200:
@@ -133,12 +116,11 @@ def set_status():
 def heartbeat():
     """Performs a heartbeat request to keep the account online."""
     try:
-        # Use chrome120 - widely supported
         response = curl_requests.get(
             "https://discord.com/api/v9/users/@me",
             headers=build_headers(),
             timeout=10,
-            impersonate="chrome120"  # Supported in most versions
+            impersonate="chrome120"
         )
 
         if response.status_code == 200:
@@ -160,17 +142,16 @@ def human_like_delay():
     delay = random.uniform(1.1, 3.5)
     time.sleep(delay)
 
-def main():
+def run_bot():
+    """Main bot loop"""
     print(f"{Fore.YELLOW}[*] Initializing Anti-Detection Self-Bot...")
     
-    # Show current configuration (mask token)
     if TOKEN:
         masked_token = TOKEN[:10] + "..." + TOKEN[-10:] if len(TOKEN) > 20 else "***"
         print(f"{Fore.CYAN}[*] Token: {masked_token}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
     print(f"{Fore.CYAN}[*] Python Version: {sys.version}")
 
-    # Test connection first
     print(f"{Fore.YELLOW}[*] Testing connection to Discord...")
     try:
         test_response = curl_requests.get(
@@ -186,7 +167,6 @@ def main():
     except Exception as e:
         print(f"{Fore.RED}[-] Connection test error: {e}")
 
-    # Initial status set
     if set_status():
         print(f"{Fore.GREEN}[+] Bot is now operational. Staying online...")
     else:
@@ -196,7 +176,6 @@ def main():
 
     print(f"{Fore.YELLOW}[!] Press CTRL+C to stop the bot.")
 
-    # Keep the account online with periodic, randomized activity
     retry_count = 0
     try:
         while True:
@@ -206,8 +185,6 @@ def main():
                 retry_count = 0
             else:
                 retry_count += 1
-                
-                # Rebuild headers on repeated failures
                 if retry_count > 3:
                     print(f"{Fore.YELLOW}[!] Multiple failures, refreshing state...")
                     retry_count = 0
@@ -217,5 +194,28 @@ def main():
     except Exception as e:
         print(f"{Fore.RED}[-] Fatal error: {e}")
 
+# ----------------- WEB SERVER FOR RENDER -----------------
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Discord Self-Bot is running")
+    
+    def log_message(self, format, *args):
+        pass  # Suppress web server logs
+
+def run_web_server():
+    """Runs a minimal web server to satisfy Render's requirements"""
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"{Fore.CYAN}[*] Web server running on port {port}")
+    server.serve_forever()
+
+# Start the web server in a background thread
+web_thread = Thread(target=run_web_server, daemon=True)
+web_thread.start()
+print(f"{Fore.CYAN}[*] Web server thread started")
+
+# Run the bot in the main thread
 if __name__ == "__main__":
-    main()
+    run_bot()
