@@ -32,7 +32,7 @@ except ImportError:
 # ----------------- CONFIGURATION -----------------
 TOKEN = os.environ.get("DISCORD_TOKEN")
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
-STATUS = "online"  # online, idle, dnd
+STATUS = "online"  # online, idle, dnd, invisible
 # -------------------------------------------------
 
 if not TOKEN:
@@ -79,32 +79,54 @@ def build_headers():
     }
 
 def set_status():
-    """Sets the user's status using curl_cffi with browser impersonation."""
-    status_payload = {
-        "status": STATUS,
+    """Sets the user's online status AND custom status."""
+    
+    # 1. Primero, establecer la presencia online (verde/amarillo/rojo)
+    presence_payload = {
+        "status": STATUS  # online, idle, dnd
+    }
+    
+    # 2. Luego, establecer el custom status (texto debajo del nombre)
+    custom_payload = {
         "custom_status": {
             "text": CUSTOM_STATUS_TEXT
         }
     }
-
+    
     try:
-        response = curl_requests.patch(
+        # Actualizar presencia online
+        presence_response = curl_requests.patch(
             "https://discord.com/api/v9/users/@me/settings",
-            json=status_payload,
+            json=presence_payload,
             headers=build_headers(),
             timeout=15,
             impersonate="chrome120"
         )
-
-        if response.status_code == 200:
-            print(f"{Fore.GREEN}[+] Status updated successfully!")
+        
+        if presence_response.status_code != 200:
+            print(f"{Fore.RED}[-] Failed to update online presence. Status Code: {presence_response.status_code}")
+            return False
+        
+        print(f"{Fore.GREEN}[+] Online presence set to: {STATUS}")
+        
+        # Actualizar custom status (texto)
+        custom_response = curl_requests.patch(
+            "https://discord.com/api/v9/users/@me/settings",
+            json=custom_payload,
+            headers=build_headers(),
+            timeout=15,
+            impersonate="chrome120"
+        )
+        
+        if custom_response.status_code == 200:
+            print(f"{Fore.GREEN}[+] Custom status updated successfully!")
             print(f"{Fore.CYAN}[+] Status: {STATUS}")
             print(f"{Fore.CYAN}[+] Custom Status Text: {CUSTOM_STATUS_TEXT}")
             return True
         else:
-            print(f"{Fore.RED}[-] Failed to update status. Status Code: {response.status_code}")
+            print(f"{Fore.RED}[-] Failed to update custom status. Status Code: {custom_response.status_code}")
             try:
-                print(f"{Fore.YELLOW}[!] Response: {response.text}")
+                print(f"{Fore.YELLOW}[!] Response: {custom_response.text}")
             except:
                 pass
             return False
@@ -153,7 +175,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         
         # Return a simple status message
-        status_msg = f"Discord Self-Bot Running\nStatus: Online\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        status_msg = f"Discord Self-Bot Running\nStatus: {STATUS}\nCustom Status: {CUSTOM_STATUS_TEXT}\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
         self.wfile.write(status_msg.encode())
     
     def do_HEAD(self):
@@ -183,6 +205,7 @@ def run_bot():
         masked_token = TOKEN[:10] + "..." + TOKEN[-10:] if len(TOKEN) > 20 else "***"
         print(f"{Fore.CYAN}[*] Token: {masked_token}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
+    print(f"{Fore.CYAN}[*] Status Mode: {STATUS}")
     print(f"{Fore.CYAN}[*] Python Version: {sys.version}")
 
     print(f"{Fore.YELLOW}[*] Testing connection to Discord...")
@@ -220,6 +243,8 @@ def run_bot():
                 retry_count += 1
                 if retry_count > 3:
                     print(f"{Fore.YELLOW}[!] Multiple failures, refreshing state...")
+                    # Re-set status in case it was lost
+                    set_status()
                     retry_count = 0
 
     except KeyboardInterrupt:
