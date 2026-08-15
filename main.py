@@ -9,14 +9,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 import pytz
 
-# Intentar importar curl_cffi para TLS spoofing
-try:
-    from curl_cffi import requests as curl_requests
-except ImportError:
-    print("Installing curl_cffi...")
-    os.system("pip install curl_cffi")
-    from curl_cffi import requests as curl_requests
-
 try:
     from colorama import Fore, Style, init
     init(autoreset=True)
@@ -38,7 +30,7 @@ def get_local_time():
 
 TOKEN = os.environ.get("DISCORD_TOKEN")
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
-STATUS = os.environ.get("STATUS_MODE", "online")  # online, idle, dnd
+STATUS = os.environ.get("STATUS_MODE", "online")
 
 if not TOKEN:
     print(f"{Fore.RED}[!] ERROR: DISCORD_TOKEN environment variable not set!")
@@ -67,75 +59,16 @@ def run_http_server():
 
 threading.Thread(target=run_http_server, daemon=True).start()
 
-# ----------------- FUNCIONES DE ANTI-DETECCION -----------------
-def generate_super_properties():
-    properties = {
-        "os": "Windows",
-        "browser": "Chrome",
-        "device": "",
-        "system_locale": "en-US",
-        "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "browser_version": "120.0.0.0",
-        "os_version": "10",
-        "referrer": "",
-        "referring_domain": "",
-        "referrer_current": "",
-        "referring_domain_current": "",
-        "release_channel": "stable",
-        "client_build_number": random.randint(250000, 300000),
-        "client_event_source": None,
-        "has_client_mods": False
-    }
-    return base64.b64encode(json.dumps(properties).encode()).decode()
-
-def build_headers():
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/120.0"
-    ]
-    return {
-        "Authorization": TOKEN,
-        "Content-Type": "application/json",
-        "User-Agent": random.choice(user_agents),
-        "X-Super-Properties": generate_super_properties(),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-    }
-
-# ----------------- GATEWAY WEBSOCKET CON ANTI-DETECCION -----------------
+# ----------------- GATEWAY WEBSOCKET (VERSION SIMPLIFICADA) -----------------
 async def discord_gateway():
-    """Conecta al gateway de Discord usando WebSocket con anti-detección"""
+    """Conecta al gateway de Discord usando WebSocket (basado en el código que funcionaba)"""
     
-    # Verificar token primero
-    try:
-        r = curl_requests.get(
-            "https://discord.com/api/v9/users/@me",
-            headers=build_headers(),
-            timeout=10,
-            impersonate="chrome120"
-        )
-        if r.status_code != 200:
-            print(f"{Fore.RED}[-] Invalid token! Status: {r.status_code}")
-            return
-        user = r.json()
-        print(f"{Fore.GREEN}[+] Logged in as {user['username']} ({user['id']})!")
-    except Exception as e:
-        print(f"{Fore.RED}[-] Failed to verify token: {e}")
-        return
-
-    # Conectar al gateway
-    uri = "wss://gateway.discord.gg/?v=9&encoding=json"
+    import websockets
+    
+    uri = "wss://gateway.discord.gg/?v=10&encoding=json"
     
     try:
-        # Usar websockets con headers personalizados
-        import websockets
-        extra_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }
-        
-        async with websockets.connect(uri, extra_headers=extra_headers) as ws:
+        async with websockets.connect(uri) as ws:
             # Recibir hello
             hello = json.loads(await ws.recv())
             heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
@@ -151,39 +84,30 @@ async def discord_gateway():
 
             asyncio.create_task(heartbeat_task())
 
-            # Identificar con presencia
+            # Identificar con presencia (ESTE ES EL PASO CLAVE)
+            activity = {
+                "name": "Custom Status",
+                "type": 4,  # 4 = Custom Status
+                "state": CUSTOM_STATUS_TEXT,
+                "id": "custom"
+            }
+            
             identify = {
                 "op": 2,
                 "d": {
                     "token": TOKEN,
                     "properties": {
-                        "$os": "Windows",
-                        "$browser": "Chrome",
-                        "$device": "pc",
-                        "$referrer": "",
-                        "$referring_domain": ""
+                        "$os": "windows",
+                        "$browser": "chrome",
+                        "$device": "pc"
                     },
                     "presence": {
-                        "status": STATUS,
+                        "status": STATUS,  # online, idle, dnd
                         "afk": False,
-                        "activities": [
-                            {
-                                "name": "Custom Status",
-                                "type": 4,  # Custom status
-                                "state": CUSTOM_STATUS_TEXT,
-                                "id": "custom"
-                            }
-                        ]
+                        "activities": [activity]
                     },
                     "compress": False,
-                    "large_threshold": 250,
-                    "client_state": {
-                        "guild_versions": {},
-                        "highest_last_message_id": "0",
-                        "read_state_version": 0,
-                        "user_guild_settings_version": -1,
-                        "user_settings_version": -1
-                    }
+                    "large_threshold": 250
                 }
             }
             
@@ -191,6 +115,13 @@ async def discord_gateway():
             print(f"{Fore.GREEN}[+] Identified with Discord!")
             print(f"{Fore.CYAN}[*] Status: {STATUS}")
             print(f"{Fore.CYAN}[*] Custom Status: {CUSTOM_STATUS_TEXT}")
+            
+            # Verificar que la conexión está activa
+            ready_event = await ws.recv()
+            ready_data = json.loads(ready_event)
+            if ready_data.get("t") == "READY":
+                print(f"{Fore.GREEN}[+] Ready! Session ID: {ready_data['d']['session_id']}")
+                print(f"{Fore.GREEN}[+] Bot is now online with presence active!")
 
             # Bucle principal
             while True:
@@ -200,38 +131,36 @@ async def discord_gateway():
                     
                     op_code = data.get("op")
                     
-                    # Heartbeat ACK
-                    if op_code == 11:
+                    if op_code == 11:  # Heartbeat ACK
                         pass
-                    
-                    # Ready event
-                    elif op_code == 0 and data.get("t") == "READY":
-                        print(f"{Fore.GREEN}[+] Ready! Session ID: {data['d']['session_id']}")
-                    
-                    # Reconnect
-                    elif op_code == 7:
-                        print(f"{Fore.YELLOW}[!] Reconnect requested, reconnecting...")
+                    elif op_code == 7:  # Reconnect
+                        print(f"{Fore.YELLOW}[!] Reconnect requested")
                         break
-                    
-                    # Invalid session
-                    elif op_code == 9:
-                        print(f"{Fore.RED}[-] Invalid session! Reconnecting...")
+                    elif op_code == 9:  # Invalid session
+                        print(f"{Fore.RED}[-] Invalid session")
                         break
-                    
+                    elif op_code == 0:
+                        t = data.get("t")
+                        if t == "PRESENCE_UPDATE":
+                            pass  # Silenciar actualizaciones de presencia
+                        
                 except websockets.exceptions.ConnectionClosed:
-                    print(f"{Fore.YELLOW}[!] Connection closed, reconnecting...")
+                    print(f"{Fore.YELLOW}[!] Connection closed")
                     break
                 except Exception as e:
-                    print(f"{Fore.RED}[-] Error in gateway: {e}")
+                    print(f"{Fore.RED}[-] Error: {e}")
                     break
 
     except Exception as e:
-        print(f"{Fore.RED}[-] Failed to connect to gateway: {e}")
+        print(f"{Fore.RED}[-] Failed to connect: {e}")
         await asyncio.sleep(5)
 
 # ----------------- RECONEXION AUTOMATICA -----------------
 async def main():
-    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot with Anti-Detection...")
+    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot...")
+    print(f"{Fore.CYAN}[*] Token: {TOKEN[:10]}...{TOKEN[-10:]}")
+    print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
+    print(f"{Fore.CYAN}[*] Status Mode: {STATUS}")
     print(f"{Fore.CYAN}[*] Local time: {get_local_time()}")
     
     while True:
