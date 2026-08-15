@@ -6,6 +6,8 @@ import os
 import sys
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
+import pytz  # Necesario para zonas horarias
 
 # Try to import curl_cffi, install if missing
 try:
@@ -28,6 +30,18 @@ except ImportError:
     Style = None
     def init():
         pass
+
+# ----------------- CONFIGURACION DE ZONA HORARIA -----------------
+# Argentina: UTC-3
+TIMEZONE = pytz.timezone('America/Argentina/Buenos_Aires')
+
+def get_local_time():
+    """Retorna la hora actual en la zona horaria de Argentina"""
+    return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+def get_local_time_http():
+    """Retorna la hora actual en la zona horaria de Argentina para el servidor web"""
+    return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 # ----------------- CONFIGURATION -----------------
 TOKEN = os.environ.get("DISCORD_TOKEN")
@@ -146,8 +160,8 @@ def heartbeat():
         )
 
         if response.status_code == 200:
-            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-            print(f"{Fore.GREEN}[{current_time}] Heartbeat successful.")
+            local_time = get_local_time()
+            print(f"{Fore.GREEN}[{local_time}] Heartbeat successful.")
             return True
         else:
             print(f"{Fore.RED}[-] Heartbeat failed. Status Code: {response.status_code}")
@@ -174,8 +188,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         
-        # Return a simple status message
-        status_msg = f"Discord Self-Bot Running\nStatus: {STATUS}\nCustom Status: {CUSTOM_STATUS_TEXT}\nTime: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        # Usar hora local de Argentina
+        local_time = get_local_time_http()
+        status_msg = f"Discord Self-Bot Running\nStatus: {STATUS}\nCustom Status: {CUSTOM_STATUS_TEXT}\nLocal Time (Argentina): {local_time}\nServer Time (UTC): {time.strftime('%Y-%m-%d %H:%M:%S')}"
         self.wfile.write(status_msg.encode())
     
     def do_HEAD(self):
@@ -192,14 +207,19 @@ def run_web_server():
     """Runs a web server on the port Render expects"""
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    local_time = get_local_time()
     print(f"{Fore.CYAN}[*] Web server running on port {port}")
     print(f"{Fore.CYAN}[*] Health check available at: http://0.0.0.0:{port}/")
+    print(f"{Fore.CYAN}[*] Local time (Argentina): {local_time}")
     server.serve_forever()
 
 # ----------------- MAIN BOT FUNCTION -----------------
 def run_bot():
     """Main bot loop"""
     print(f"{Fore.YELLOW}[*] Initializing Anti-Detection Self-Bot...")
+    
+    local_time = get_local_time()
+    print(f"{Fore.CYAN}[*] Local time (Argentina): {local_time}")
     
     if TOKEN:
         masked_token = TOKEN[:10] + "..." + TOKEN[-10:] if len(TOKEN) > 20 else "***"
@@ -243,7 +263,6 @@ def run_bot():
                 retry_count += 1
                 if retry_count > 3:
                     print(f"{Fore.YELLOW}[!] Multiple failures, refreshing state...")
-                    # Re-set status in case it was lost
                     set_status()
                     retry_count = 0
 
