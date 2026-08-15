@@ -2,4 +2,3 @@ curl_cffi
 colorama
 pytz
 websockets
-requests
