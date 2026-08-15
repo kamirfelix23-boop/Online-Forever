@@ -1,4 +1,4 @@
 requests
 websockets
-tls-client
+curl_cffi
 colorama
