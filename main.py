@@ -6,19 +6,28 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import websockets
 
-# Servidor HTTP basico para que Render mantenga el Web Service ACTIVO
+# Servidor HTTP mejorado para evitar errores 501 / 500 con UptimeRobot
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/html")
         self.end_headers()
         self.wfile.write(b"Bot 24/7 de Discord Activo")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+
+    # Silenciar logs molestos en consola
+    def log_message(self, format, *args):
+        return
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# Iniciamos el servidor en segundo plano
 threading.Thread(target=run_http_server, daemon=True).start()
 
 # Cargar TOKEN de las variables de entorno de Render
