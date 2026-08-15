@@ -1,15 +1,15 @@
+import asyncio
 import json
-import base64
+import os
+import threading
 import random
 import time
-import os
-import sys
-from threading import Thread
+import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-import pytz  # Necesario para zonas horarias
+import pytz
 
-# Try to import curl_cffi, install if missing
+# Intentar importar curl_cffi para TLS spoofing
 try:
     from curl_cffi import requests as curl_requests
 except ImportError:
@@ -21,7 +21,6 @@ try:
     from colorama import Fore, Style, init
     init(autoreset=True)
 except ImportError:
-    # Fallback if colorama is not installed
     class Fore:
         RED = '\033[91m'
         GREEN = '\033[92m'
@@ -31,31 +30,45 @@ except ImportError:
     def init():
         pass
 
-# ----------------- CONFIGURACION DE ZONA HORARIA -----------------
-# Argentina: UTC-3
+# ----------------- CONFIGURACION -----------------
 TIMEZONE = pytz.timezone('America/Argentina/Buenos_Aires')
 
 def get_local_time():
-    """Retorna la hora actual en la zona horaria de Argentina"""
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
-def get_local_time_http():
-    """Retorna la hora actual en la zona horaria de Argentina para el servidor web"""
-    return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-
-# ----------------- CONFIGURATION -----------------
 TOKEN = os.environ.get("DISCORD_TOKEN")
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
-STATUS = "online"  # online, idle, dnd, invisible
-# -------------------------------------------------
+STATUS = os.environ.get("STATUS_MODE", "online")  # online, idle, dnd
 
 if not TOKEN:
     print(f"{Fore.RED}[!] ERROR: DISCORD_TOKEN environment variable not set!")
-    print(f"{Fore.YELLOW}[!] Please set DISCORD_TOKEN in Render environment variables")
-    sys.exit(1)
+    exit(1)
 
+# ----------------- SERVIDOR WEB PARA RENDER -----------------
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(f"Discord Self-Bot Running\nStatus: {STATUS}\nCustom Status: {CUSTOM_STATUS_TEXT}\nTime: {get_local_time()}".encode())
+    
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        return
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_http_server, daemon=True).start()
+
+# ----------------- FUNCIONES DE ANTI-DETECCION -----------------
 def generate_super_properties():
-    """Generates a dynamic X-Super-Properties header to mimic a real browser client."""
     properties = {
         "os": "Windows",
         "browser": "Chrome",
@@ -76,7 +89,6 @@ def generate_super_properties():
     return base64.b64encode(json.dumps(properties).encode()).decode()
 
 def build_headers():
-    """Builds headers with the dynamic X-Super-Properties and randomized User-Agent."""
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -92,191 +104,152 @@ def build_headers():
         "Connection": "keep-alive",
     }
 
-def set_status():
-    """Sets the user's online status AND custom status."""
+# ----------------- GATEWAY WEBSOCKET CON ANTI-DETECCION -----------------
+async def discord_gateway():
+    """Conecta al gateway de Discord usando WebSocket con anti-detección"""
     
-    # 1. Primero, establecer la presencia online (verde/amarillo/rojo)
-    presence_payload = {
-        "status": STATUS  # online, idle, dnd
-    }
+    # Verificar token primero
+    try:
+        r = curl_requests.get(
+            "https://discord.com/api/v9/users/@me",
+            headers=build_headers(),
+            timeout=10,
+            impersonate="chrome120"
+        )
+        if r.status_code != 200:
+            print(f"{Fore.RED}[-] Invalid token! Status: {r.status_code}")
+            return
+        user = r.json()
+        print(f"{Fore.GREEN}[+] Logged in as {user['username']} ({user['id']})!")
+    except Exception as e:
+        print(f"{Fore.RED}[-] Failed to verify token: {e}")
+        return
+
+    # Conectar al gateway
+    uri = "wss://gateway.discord.gg/?v=9&encoding=json"
     
-    # 2. Luego, establecer el custom status (texto debajo del nombre)
-    custom_payload = {
-        "custom_status": {
-            "text": CUSTOM_STATUS_TEXT
+    try:
+        # Usar websockets con headers personalizados
+        import websockets
+        extra_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
-    }
-    
-    try:
-        # Actualizar presencia online
-        presence_response = curl_requests.patch(
-            "https://discord.com/api/v9/users/@me/settings",
-            json=presence_payload,
-            headers=build_headers(),
-            timeout=15,
-            impersonate="chrome120"
-        )
         
-        if presence_response.status_code != 200:
-            print(f"{Fore.RED}[-] Failed to update online presence. Status Code: {presence_response.status_code}")
-            return False
-        
-        print(f"{Fore.GREEN}[+] Online presence set to: {STATUS}")
-        
-        # Actualizar custom status (texto)
-        custom_response = curl_requests.patch(
-            "https://discord.com/api/v9/users/@me/settings",
-            json=custom_payload,
-            headers=build_headers(),
-            timeout=15,
-            impersonate="chrome120"
-        )
-        
-        if custom_response.status_code == 200:
-            print(f"{Fore.GREEN}[+] Custom status updated successfully!")
-            print(f"{Fore.CYAN}[+] Status: {STATUS}")
-            print(f"{Fore.CYAN}[+] Custom Status Text: {CUSTOM_STATUS_TEXT}")
-            return True
-        else:
-            print(f"{Fore.RED}[-] Failed to update custom status. Status Code: {custom_response.status_code}")
-            try:
-                print(f"{Fore.YELLOW}[!] Response: {custom_response.text}")
-            except:
-                pass
-            return False
+        async with websockets.connect(uri, extra_headers=extra_headers) as ws:
+            # Recibir hello
+            hello = json.loads(await ws.recv())
+            heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
+            print(f"{Fore.CYAN}[*] Heartbeat interval: {heartbeat_interval}s")
+
+            # Tarea de heartbeat
+            async def heartbeat_task():
+                while True:
+                    await asyncio.sleep(heartbeat_interval)
+                    await ws.send(json.dumps({"op": 1, "d": None}))
+                    local_time = get_local_time()
+                    print(f"{Fore.GREEN}[{local_time}] Heartbeat sent")
+
+            asyncio.create_task(heartbeat_task())
+
+            # Identificar con presencia
+            identify = {
+                "op": 2,
+                "d": {
+                    "token": TOKEN,
+                    "properties": {
+                        "$os": "Windows",
+                        "$browser": "Chrome",
+                        "$device": "pc",
+                        "$referrer": "",
+                        "$referring_domain": ""
+                    },
+                    "presence": {
+                        "status": STATUS,
+                        "afk": False,
+                        "activities": [
+                            {
+                                "name": "Custom Status",
+                                "type": 4,  # Custom status
+                                "state": CUSTOM_STATUS_TEXT,
+                                "id": "custom"
+                            }
+                        ]
+                    },
+                    "compress": False,
+                    "large_threshold": 250,
+                    "client_state": {
+                        "guild_versions": {},
+                        "highest_last_message_id": "0",
+                        "read_state_version": 0,
+                        "user_guild_settings_version": -1,
+                        "user_settings_version": -1
+                    }
+                }
+            }
+            
+            await ws.send(json.dumps(identify))
+            print(f"{Fore.GREEN}[+] Identified with Discord!")
+            print(f"{Fore.CYAN}[*] Status: {STATUS}")
+            print(f"{Fore.CYAN}[*] Custom Status: {CUSTOM_STATUS_TEXT}")
+
+            # Bucle principal
+            while True:
+                try:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    
+                    op_code = data.get("op")
+                    
+                    # Heartbeat ACK
+                    if op_code == 11:
+                        pass
+                    
+                    # Ready event
+                    elif op_code == 0 and data.get("t") == "READY":
+                        print(f"{Fore.GREEN}[+] Ready! Session ID: {data['d']['session_id']}")
+                    
+                    # Reconnect
+                    elif op_code == 7:
+                        print(f"{Fore.YELLOW}[!] Reconnect requested, reconnecting...")
+                        break
+                    
+                    # Invalid session
+                    elif op_code == 9:
+                        print(f"{Fore.RED}[-] Invalid session! Reconnecting...")
+                        break
+                    
+                except websockets.exceptions.ConnectionClosed:
+                    print(f"{Fore.YELLOW}[!] Connection closed, reconnecting...")
+                    break
+                except Exception as e:
+                    print(f"{Fore.RED}[-] Error in gateway: {e}")
+                    break
 
     except Exception as e:
-        print(f"{Fore.RED}[-] An error occurred: {e}")
-        return False
+        print(f"{Fore.RED}[-] Failed to connect to gateway: {e}")
+        await asyncio.sleep(5)
 
-def heartbeat():
-    """Performs a heartbeat request to keep the account online."""
-    try:
-        response = curl_requests.get(
-            "https://discord.com/api/v9/users/@me",
-            headers=build_headers(),
-            timeout=10,
-            impersonate="chrome120"
-        )
-
-        if response.status_code == 200:
-            local_time = get_local_time()
-            print(f"{Fore.GREEN}[{local_time}] Heartbeat successful.")
-            return True
-        else:
-            print(f"{Fore.RED}[-] Heartbeat failed. Status Code: {response.status_code}")
-            if response.status_code == 401:
-                print(f"{Fore.RED}[!] Token is invalid or expired. Please check DISCORD_TOKEN")
-            return False
-
-    except Exception as e:
-        print(f"{Fore.RED}[-] Heartbeat error: {e}")
-        return False
-
-def human_like_delay():
-    """Adds a random, human-like delay between 1100ms and 3500ms to avoid rate limiting."""
-    delay = random.uniform(1.1, 3.5)
-    time.sleep(delay)
-
-# ----------------- WEB SERVER FOR RENDER (REQUIRED) -----------------
-class HealthHandler(BaseHTTPRequestHandler):
-    """Simple HTTP handler that responds to health checks"""
+# ----------------- RECONEXION AUTOMATICA -----------------
+async def main():
+    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot with Anti-Detection...")
+    print(f"{Fore.CYAN}[*] Local time: {get_local_time()}")
     
-    def do_GET(self):
-        """Handle GET requests - respond with status"""
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
+    while True:
+        try:
+            await discord_gateway()
+        except Exception as e:
+            print(f"{Fore.RED}[-] Gateway error: {e}")
         
-        # Usar hora local de Argentina
-        local_time = get_local_time_http()
-        status_msg = f"Discord Self-Bot Running\nStatus: {STATUS}\nCustom Status: {CUSTOM_STATUS_TEXT}\nLocal Time (Argentina): {local_time}\nServer Time (UTC): {time.strftime('%Y-%m-%d %H:%M:%S')}"
-        self.wfile.write(status_msg.encode())
-    
-    def do_HEAD(self):
-        """Handle HEAD requests - just respond with 200"""
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-    
-    def log_message(self, format, *args):
-        """Suppress web server logs to keep console clean"""
-        pass
+        print(f"{Fore.YELLOW}[!] Reconnecting in 5 seconds...")
+        await asyncio.sleep(5)
 
-def run_web_server():
-    """Runs a web server on the port Render expects"""
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    local_time = get_local_time()
-    print(f"{Fore.CYAN}[*] Web server running on port {port}")
-    print(f"{Fore.CYAN}[*] Health check available at: http://0.0.0.0:{port}/")
-    print(f"{Fore.CYAN}[*] Local time (Argentina): {local_time}")
-    server.serve_forever()
-
-# ----------------- MAIN BOT FUNCTION -----------------
-def run_bot():
-    """Main bot loop"""
-    print(f"{Fore.YELLOW}[*] Initializing Anti-Detection Self-Bot...")
-    
-    local_time = get_local_time()
-    print(f"{Fore.CYAN}[*] Local time (Argentina): {local_time}")
-    
-    if TOKEN:
-        masked_token = TOKEN[:10] + "..." + TOKEN[-10:] if len(TOKEN) > 20 else "***"
-        print(f"{Fore.CYAN}[*] Token: {masked_token}")
-    print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
-    print(f"{Fore.CYAN}[*] Status Mode: {STATUS}")
-    print(f"{Fore.CYAN}[*] Python Version: {sys.version}")
-
-    print(f"{Fore.YELLOW}[*] Testing connection to Discord...")
-    try:
-        test_response = curl_requests.get(
-            "https://discord.com/api/v9/users/@me",
-            headers=build_headers(),
-            timeout=10,
-            impersonate="chrome120"
-        )
-        if test_response.status_code == 200:
-            print(f"{Fore.GREEN}[+] Connection successful!")
-        else:
-            print(f"{Fore.RED}[-] Connection test failed. Status: {test_response.status_code}")
-    except Exception as e:
-        print(f"{Fore.RED}[-] Connection test error: {e}")
-
-    if set_status():
-        print(f"{Fore.GREEN}[+] Bot is now operational. Staying online...")
-    else:
-        print(f"{Fore.RED}[-] Failed to start. Check your token and network.")
-        print(f"{Fore.YELLOW}[!] Will retry in 30 seconds...")
-        time.sleep(30)
-
-    print(f"{Fore.YELLOW}[!] Press CTRL+C to stop the bot.")
-
-    retry_count = 0
-    try:
-        while True:
-            human_like_delay()
-
-            if heartbeat():
-                retry_count = 0
-            else:
-                retry_count += 1
-                if retry_count > 3:
-                    print(f"{Fore.YELLOW}[!] Multiple failures, refreshing state...")
-                    set_status()
-                    retry_count = 0
-
-    except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}[!] Bot stopped by user.")
-    except Exception as e:
-        print(f"{Fore.RED}[-] Fatal error: {e}")
-
-# ----------------- STARTUP -----------------
+# ----------------- EJECUTAR -----------------
 if __name__ == "__main__":
-    # Start web server in background thread
-    web_thread = Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    print(f"{Fore.CYAN}[*] Web server thread started")
+    try:
+        import websockets
+    except ImportError:
+        print("Installing websockets...")
+        os.system("pip install websockets")
+        import websockets
     
-    # Run the bot in the main thread
-    run_bot()
+    asyncio.run(main())
