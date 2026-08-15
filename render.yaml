@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: discord-selfbot
+    runtime: python
+    repo: https://github.com/kamirfelix23-boop/Online-Forever
+    branch: main
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: STATUS_TEXT
+        sync: false
