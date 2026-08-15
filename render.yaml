@@ -9,3 +9,5 @@ services:
         sync: true
       - key: STATUS_TEXT
         sync: true
+      - key: STATUS_MODE
+        sync: true
