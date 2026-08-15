@@ -6,6 +6,6 @@ services:
     branch: main
     envVars:
       - key: DISCORD_TOKEN
-        sync: false
+        sync: true
       - key: STATUS_TEXT
-        sync: false
+        sync: true
