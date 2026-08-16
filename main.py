@@ -40,6 +40,11 @@ TOKEN = os.environ.get("DISCORD_TOKEN")
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
 STATUS = os.environ.get("STATUS_MODE", "online")
 
+# Variables de control global
+bot_running = True
+current_status = STATUS
+current_custom_text = CUSTOM_STATUS_TEXT
+
 if not TOKEN:
     print(f"{Fore.RED}[!] ERROR: DISCORD_TOKEN environment variable not set!")
     sys.exit(1)
@@ -81,13 +86,13 @@ def build_headers():
         "Connection": "keep-alive",
     }
 
-# ----------------- SERVIDOR WEB PARA RENDER -----------------
+# ----------------- SERVIDOR WEB PARA RENDER (EVITA SLEEP) -----------------
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        status_msg = f"Discord Self-Bot Running\nStatus: {STATUS}\nCustom Status: {CUSTOM_STATUS_TEXT}\nTime: {get_local_time()}"
+        status_msg = f"Discord Self-Bot Running\nStatus: {current_status}\nCustom Status: {current_custom_text}\nTime: {get_local_time()}\nUptime: Active"
         self.wfile.write(status_msg.encode())
     
     def do_HEAD(self):
@@ -117,17 +122,30 @@ def verify_token():
         if response.status_code == 200:
             user = response.json()
             print(f"{Fore.GREEN}[+] Logged in as {user['username']} ({user['id']})!")
-            return True
+            return user
         else:
             print(f"{Fore.RED}[-] Invalid token! Status: {response.status_code}")
-            return False
+            return None
     except Exception as e:
         print(f"{Fore.RED}[-] Token verification error: {e}")
-        return False
+        return None
 
-# ----------------- GATEWAY WEBSOCKET (BASADO EN EL CODIGO DE GEMINI) -----------------
+# ----------------- ACTUALIZAR STATUS POR COMANDO -----------------
+def update_status(new_status=None, new_text=None):
+    """Actualiza las variables globales de estado"""
+    global current_status, current_custom_text
+    
+    if new_status:
+        current_status = new_status
+    if new_text:
+        current_custom_text = new_text
+    
+    print(f"{Fore.CYAN}[*] Status updated to: {current_status}")
+    print(f"{Fore.CYAN}[*] Custom text: {current_custom_text}")
+
+# ----------------- GATEWAY WEBSOCKET CON COMANDOS DM -----------------
 async def discord_gateway():
-    """Conecta al gateway usando WebSocket (mismo método que funcionaba)"""
+    """Conecta al gateway con soporte para comandos por DM"""
     
     import websockets
     
@@ -140,7 +158,7 @@ async def discord_gateway():
             heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
             print(f"{Fore.CYAN}[*] Heartbeat interval: {heartbeat_interval}s")
 
-            # Tarea de heartbeat CON JITTER (para anti-detección)
+            # Tarea de heartbeat CON JITTER
             async def heartbeat_task():
                 while True:
                     jitter = random.uniform(-0.3, 0.3)
@@ -151,12 +169,11 @@ async def discord_gateway():
 
             asyncio.create_task(heartbeat_task())
 
-            # --- IDENTIFY (IGUAL QUE EL CODIGO DE GEMINI QUE FUNCIONABA) ---
-            # Esta es la estructura que funcionaba para establecer presencia online
+            # IDENTIFY con presencia
             activity = {
                 "name": "Custom Status",
-                "type": 4,  # 4 = Custom Status
-                "state": CUSTOM_STATUS_TEXT,
+                "type": 4,
+                "state": current_custom_text,
                 "id": "custom"
             }
             
@@ -170,7 +187,7 @@ async def discord_gateway():
                         "$device": "pc"
                     },
                     "presence": {
-                        "status": STATUS,      # online, idle, dnd
+                        "status": current_status,
                         "afk": False,
                         "activities": [activity]
                     },
@@ -181,18 +198,23 @@ async def discord_gateway():
             
             await ws.send(json.dumps(identify))
             print(f"{Fore.GREEN}[+] Identified with Discord!")
-            print(f"{Fore.CYAN}[*] Status: {STATUS}")
-            print(f"{Fore.CYAN}[*] Custom Status: {CUSTOM_STATUS_TEXT}")
+            print(f"{Fore.CYAN}[*] Status: {current_status}")
+            print(f"{Fore.CYAN}[*] Custom Status: {current_custom_text}")
 
-            # Esperar el evento READY
+            # Esperar READY
             ready_event = await ws.recv()
             ready_data = json.loads(ready_event)
             if ready_data.get("t") == "READY":
-                print(f"{Fore.GREEN}[+] ✅ READY! Session ID: {ready_data['d']['session_id']}")
-                print(f"{Fore.GREEN}[+] 🟢 You are NOW ONLINE with presence active!")
-                print(f"{Fore.GREEN}[+] ✅ Your status is visible to others!")
+                user_id = ready_data['d']['user']['id']
+                print(f"{Fore.GREEN}[+] ✅ READY! User ID: {user_id}")
+                print(f"{Fore.GREEN}[+] 🟢 You are NOW ONLINE!")
+                print(f"{Fore.CYAN}[*] 💬 Send 'rezty on' to set online")
+                print(f"{Fore.CYAN}[*] 💬 Send 'rezty idle' to set idle")
+                print(f"{Fore.CYAN}[*] 💬 Send 'rezty dnd' to set DND")
+                print(f"{Fore.CYAN}[*] 💬 Send 'rezty offline' to set offline")
+                print(f"{Fore.CYAN}[*] 💬 Send 'rezty status: texto' to change custom status")
 
-            # Bucle principal
+            # Bucle principal - ESCUCHA COMANDOS
             while True:
                 try:
                     msg = await ws.recv()
@@ -207,7 +229,74 @@ async def discord_gateway():
                     elif op_code == 9:  # Invalid session
                         print(f"{Fore.RED}[-] Invalid session")
                         break
+                    elif op_code == 0:  # Dispatch event
+                        event_type = data.get("t")
                         
+                        # --- PROCESAR MENSAJES DIRECTOS ---
+                        if event_type == "MESSAGE_CREATE":
+                            msg_data = data.get("d", {})
+                            channel_id = msg_data.get("channel_id")
+                            content = msg_data.get("content", "").lower().strip()
+                            author_id = msg_data.get("author", {}).get("id")
+                            
+                            # Verificar si es DM (channel_id == author_id en DMs)
+                            if channel_id == author_id:
+                                print(f"{Fore.YELLOW}[*] DM from {author_id}: {content}")
+                                
+                                # Procesar comandos
+                                if content.startswith("rezty "):
+                                    command = content[6:].strip()
+                                    
+                                    # Comando: rezty on/offline/idle/dnd
+                                    if command == "on":
+                                        update_status("online")
+                                        await send_presence_update(ws)
+                                        await send_dm_response(ws, author_id, "✅ Status set to ONLINE")
+                                    
+                                    elif command == "idle":
+                                        update_status("idle")
+                                        await send_presence_update(ws)
+                                        await send_dm_response(ws, author_id, "💤 Status set to IDLE")
+                                    
+                                    elif command == "dnd":
+                                        update_status("dnd")
+                                        await send_presence_update(ws)
+                                        await send_dm_response(ws, author_id, "🚫 Status set to DO NOT DISTURB")
+                                    
+                                    elif command == "offline":
+                                        update_status("invisible")
+                                        await send_presence_update(ws)
+                                        await send_dm_response(ws, author_id, "🌙 Status set to OFFLINE (invisible)")
+                                    
+                                    # Comando: rezty status: nuevo texto
+                                    elif command.startswith("status:"):
+                                        new_text = command[7:].strip()
+                                        if new_text:
+                                            update_status(None, new_text)
+                                            await send_presence_update(ws)
+                                            await send_dm_response(ws, author_id, f"📝 Custom status changed to: {new_text}")
+                                        else:
+                                            await send_dm_response(ws, author_id, "❌ Please provide text: `rezty status: nuevo texto`")
+                                    
+                                    # Comando: rezty help
+                                    elif command == "help":
+                                        help_msg = (
+                                            "📖 **Comandos disponibles:**\n"
+                                            "• `rezty on` - Set online\n"
+                                            "• `rezty idle` - Set idle\n"
+                                            "• `rezty dnd` - Set Do Not Disturb\n"
+                                            "• `rezty offline` - Set offline (invisible)\n"
+                                            "• `rezty status: texto` - Change custom status text\n"
+                                            "• `rezty help` - Show this message"
+                                        )
+                                        await send_dm_response(ws, author_id, help_msg)
+                                    else:
+                                        await send_dm_response(ws, author_id, "❌ Unknown command. Send `rezty help` for available commands.")
+
+                    # Enviar presencia actualizada (reconexión)
+                    if op_code == 10:  # Hello
+                        print(f"{Fore.CYAN}[*] Reconnecting...")
+
                 except websockets.exceptions.ConnectionClosed:
                     print(f"{Fore.YELLOW}[!] Connection closed")
                     break
@@ -219,19 +308,83 @@ async def discord_gateway():
         print(f"{Fore.RED}[-] Failed to connect to gateway: {e}")
         await asyncio.sleep(5)
 
-# ----------------- RECONEXION AUTOMATICA -----------------
+# ----------------- FUNCIONES DE ENVIO POR DM -----------------
+async def send_presence_update(ws):
+    """Envía una actualización de presencia al WebSocket"""
+    activity = {
+        "name": "Custom Status",
+        "type": 4,
+        "state": current_custom_text,
+        "id": "custom"
+    }
+    
+    presence_update = {
+        "op": 3,  # Presence Update
+        "d": {
+            "status": current_status,
+            "afk": False,
+            "activities": [activity],
+            "since": 0
+        }
+    }
+    
+    await ws.send(json.dumps(presence_update))
+    print(f"{Fore.GREEN}[+] Presence updated to: {current_status}")
+
+async def send_dm_response(ws, user_id, message):
+    """Envía un mensaje directo al usuario que envió el comando"""
+    # Crear channel DM
+    create_dm = {
+        "op": 0,
+        "d": {
+            "recipient_id": user_id
+        }
+    }
+    # Nota: Para enviar mensajes se necesita una petición HTTP, no WebSocket
+    # Vamos a usar HTTP para enviar la respuesta
+    try:
+        # Primero obtener el DM channel
+        dm_response = curl_requests.post(
+            "https://discord.com/api/v9/users/@me/channels",
+            json={"recipient_id": user_id},
+            headers=build_headers(),
+            impersonate="chrome120"
+        )
+        
+        if dm_response.status_code == 200:
+            channel_id = dm_response.json()["id"]
+            # Enviar mensaje
+            send_response = curl_requests.post(
+                f"https://discord.com/api/v9/channels/{channel_id}/messages",
+                json={"content": message},
+                headers=build_headers(),
+                impersonate="chrome120"
+            )
+            if send_response.status_code == 200:
+                print(f"{Fore.GREEN}[+] DM sent to {user_id}")
+            else:
+                print(f"{Fore.RED}[-] Failed to send DM: {send_response.status_code}")
+        else:
+            print(f"{Fore.RED}[-] Failed to create DM channel: {dm_response.status_code}")
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error sending DM: {e}")
+
+# ----------------- RECONEXION AUTOMATICA CON BACKOFF -----------------
 async def main():
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
-    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot (Fixed)")
+    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot (With Commands)")
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
     print(f"{Fore.CYAN}[*] Token: {TOKEN[:10]}...{TOKEN[-10:]}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
     print(f"{Fore.CYAN}[*] Status Mode: {STATUS}")
     print(f"{Fore.CYAN}[*] Local time: {get_local_time()}")
     
-    if not verify_token():
+    user = verify_token()
+    if not user:
         print(f"{Fore.RED}[!] Token verification failed. Retrying in 30s...")
         await asyncio.sleep(30)
+    else:
+        print(f"{Fore.GREEN}[+] Bot ready! Commands active!")
     
     retry_count = 0
     while True:
@@ -242,7 +395,8 @@ async def main():
             print(f"{Fore.RED}[-] Gateway error: {e}")
             retry_count += 1
         
-        wait_time = min(5 + (retry_count * 2), 30)
+        # Backoff exponencial con máximo de 60s
+        wait_time = min(5 + (retry_count * 5), 60)
         print(f"{Fore.YELLOW}[!] Reconnecting in {wait_time} seconds...")
         await asyncio.sleep(wait_time)
 
