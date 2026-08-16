@@ -39,7 +39,7 @@ TIMEZONE = pytz.timezone('America/Argentina/Buenos_Aires')
 def get_local_time():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
-TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()  # Eliminar espacios
+TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
 STATUS = os.environ.get("STATUS_MODE", "online")
 
@@ -52,9 +52,8 @@ current_status = STATUS
 current_custom_text = CUSTOM_STATUS_TEXT
 bot_user_id = None
 
-# ----------------- VERIFICACION DEL TOKEN (ANTES DE CONECTAR) -----------------
+# ----------------- VERIFICACION DEL TOKEN -----------------
 def verify_token():
-    """Comprueba si el token es válido con una llamada REST."""
     try:
         headers = {"Authorization": TOKEN, "Content-Type": "application/json"}
         r = requests.get("https://discord.com/api/v9/users/@me", headers=headers, timeout=10)
@@ -64,7 +63,6 @@ def verify_token():
             return user['id']
         else:
             print(f"{Fore.RED}[-] Token inválido. Código: {r.status_code}")
-            print(f"{Fore.RED}[-] Respuesta: {r.text[:200]}")
             return None
     except Exception as e:
         print(f"{Fore.RED}[-] Error al verificar token: {e}")
@@ -108,13 +106,14 @@ def send_dm(user_id, message):
         print(f"{Fore.RED}[-] Excepción en send_dm: {e}")
         return False
 
-# ----------------- GATEWAY WEBSOCKET (CON PAYLOAD CORREGIDO) -----------------
+# ----------------- GATEWAY WEBSOCKET CON max_size AUMENTADO -----------------
 async def discord_gateway():
     global bot_user_id, current_status, current_custom_text
     uri = "wss://gateway.discord.gg/?v=10&encoding=json"
 
     try:
-        async with websockets.connect(uri) as ws:
+        # 🔥 Aumentamos el límite de tamaño de mensaje a 10 MB (10485760 bytes)
+        async with websockets.connect(uri, max_size=10 * 1024 * 1024) as ws:
             # Recibir hello
             hello = json.loads(await ws.recv())
             heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
@@ -131,7 +130,7 @@ async def discord_gateway():
                         break
             asyncio.create_task(heartbeat_task())
 
-            # --- IDENTIFY (PAYLOAD CORRECTO Y COMPLETO) ---
+            # --- IDENTIFY ---
             activity = {
                 "name": "Custom Status",
                 "type": 4,
@@ -170,24 +169,10 @@ async def discord_gateway():
             await ws.send(json.dumps(identify))
             print(f"{Fore.GREEN}[+] Identificado con Discord. Esperando READY...")
 
-            # Esperar el evento READY (con timeout)
-            try:
-                ready_event = await asyncio.wait_for(ws.recv(), timeout=30)
-                ready_data = json.loads(ready_event)
-                if ready_data.get("t") == "READY":
-                    bot_user_id = ready_data['d']['user']['id']
-                    print(f"{Fore.GREEN}[+] ✅ READY! User ID: {bot_user_id}")
-                    print(f"{Fore.GREEN}[+] 🟢 ESTADO: {current_status.upper()}")
-                    print(f"{Fore.CYAN}[*] 💬 Comandos por DM: rezty on | idle | dnd | offline | status: texto | help")
-                else:
-                    print(f"{Fore.YELLOW}[!] No se recibió READY, pero la conexión está activa.")
-            except asyncio.TimeoutError:
-                print(f"{Fore.YELLOW}[!] Timeout esperando READY, pero la conexión podría estar activa.")
-            except Exception as e:
-                print(f"{Fore.RED}[-] Error al recibir READY: {e}")
-                return
+            # ⚠️ Ya no esperamos el READY de forma bloqueante,
+            # simplemente iniciamos el bucle de mensajes y manejamos el READY cuando llegue.
 
-            # Bucle principal - ESCUCHAR MENSAJES
+            # Bucle principal
             while True:
                 try:
                     msg = await ws.recv()
@@ -204,10 +189,16 @@ async def discord_gateway():
                         break
                     elif op == 0:
                         event_type = data.get("t")
-                        if event_type == "MESSAGE_CREATE":
+                        if event_type == "READY" and bot_user_id is None:
+                            # Guardamos el ID del bot cuando llega el READY
+                            bot_user_id = data['d']['user']['id']
+                            print(f"{Fore.GREEN}[+] ✅ READY! User ID: {bot_user_id}")
+                            print(f"{Fore.GREEN}[+] 🟢 ESTADO: {current_status.upper()}")
+                            print(f"{Fore.CYAN}[*] 💬 Comandos por DM: rezty on | idle | dnd | offline | status: texto | help")
+
+                        elif event_type == "MESSAGE_CREATE":
                             msg_data = data.get("d", {})
-                            # DETECTAR DM: si no tiene guild_id
-                            if msg_data.get("guild_id") is None:
+                            if msg_data.get("guild_id") is None:  # Es DM
                                 author = msg_data.get("author", {})
                                 author_id = author.get("id")
                                 content = msg_data.get("content", "").strip()
@@ -215,7 +206,7 @@ async def discord_gateway():
                                     continue
                                 print(f"{Fore.YELLOW}[*] DM de {author.get('username')}: {content}")
 
-                                # Procesar comando (soporta "rezty" y "rezy")
+                                # Procesar comando
                                 lower = content.lower()
                                 if lower.startswith("rezty ") or lower.startswith("rezy "):
                                     cmd = lower.split(" ", 1)[1].strip() if " " in lower else ""
@@ -226,7 +217,6 @@ async def discord_gateway():
                                             current_status = new_status
                                         if new_text:
                                             current_custom_text = new_text
-                                        # Enviar actualización de presencia (op 3)
                                         act = {
                                             "name": "Custom Status",
                                             "type": 4,
@@ -243,7 +233,7 @@ async def discord_gateway():
                                             }
                                         }
                                         await ws.send(json.dumps(presence_payload))
-                                        print(f"{Fore.GREEN}[+] Presencia actualizada a {current_status} con texto '{current_custom_text}'")
+                                        print(f"{Fore.GREEN}[+] Presencia actualizada a {current_status}")
                                         if reply:
                                             send_dm(author_id, reply)
 
@@ -280,29 +270,29 @@ async def discord_gateway():
                     break
                 except Exception as e:
                     print(f"{Fore.RED}[-] Error en el bucle: {e}")
+                    # Si el error es por mensaje demasiado grande, lo ignoramos y seguimos
+                    if "message too big" in str(e):
+                        continue
                     break
 
     except Exception as e:
         print(f"{Fore.RED}[-] Error al conectar al gateway: {e}")
         await asyncio.sleep(5)
 
-# ----------------- RECONEXION CON VERIFICACION PREVIA -----------------
+# ----------------- RECONEXION -----------------
 async def main():
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
-    print(f"{Fore.YELLOW}[*] Bot SelfBot - Versión Estable")
+    print(f"{Fore.YELLOW}[*] Bot SelfBot - Versión Corregida")
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
     print(f"{Fore.CYAN}[*] Token: {TOKEN[:10]}...{TOKEN[-10:]}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
     print(f"{Fore.CYAN}[*] Status Mode: {STATUS}")
 
-    # Verificar token antes de intentar conectar
+    # Verificar token
     user_id = verify_token()
     if not user_id:
-        print(f"{Fore.RED}[!] El token es inválido. Revisa tu variable DISCORD_TOKEN en Render.")
-        print(f"{Fore.YELLOW}[!] Esperando 60 segundos antes de reintentar...")
+        print(f"{Fore.RED}[!] Token inválido. Revisa tu variable DISCORD_TOKEN.")
         await asyncio.sleep(60)
-        # Podríamos salir, pero mejor reintentar por si se actualiza la variable
-        # return
 
     while True:
         try:
