@@ -10,7 +10,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 import pytz
 
-# ----------------- ANTI-DETECCION CON TLS SPOOFING -----------------
+# ----------------- ANTI-DETECCION TLS SPOOFING -----------------
 try:
     from curl_cffi import requests as curl_requests
 except ImportError:
@@ -40,10 +40,10 @@ TOKEN = os.environ.get("DISCORD_TOKEN")
 CUSTOM_STATUS_TEXT = os.environ.get("STATUS_TEXT", "Online 24/7")
 STATUS = os.environ.get("STATUS_MODE", "online")
 
-# Variables de control global
-bot_running = True
+# Variables globales de estado
 current_status = STATUS
 current_custom_text = CUSTOM_STATUS_TEXT
+bot_user_id = None
 
 if not TOKEN:
     print(f"{Fore.RED}[!] ERROR: DISCORD_TOKEN environment variable not set!")
@@ -86,13 +86,13 @@ def build_headers():
         "Connection": "keep-alive",
     }
 
-# ----------------- SERVIDOR WEB PARA RENDER (EVITA SLEEP) -----------------
+# ----------------- SERVIDOR WEB PARA RENDER -----------------
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        status_msg = f"Discord Self-Bot Running\nStatus: {current_status}\nCustom Status: {current_custom_text}\nTime: {get_local_time()}\nUptime: Active"
+        status_msg = f"Discord Self-Bot Running\nStatus: {current_status}\nCustom Status: {current_custom_text}\nTime: {get_local_time()}"
         self.wfile.write(status_msg.encode())
     
     def do_HEAD(self):
@@ -112,6 +112,7 @@ threading.Thread(target=run_http_server, daemon=True).start()
 
 # ----------------- VERIFICACION DE TOKEN -----------------
 def verify_token():
+    global bot_user_id
     try:
         response = curl_requests.get(
             "https://discord.com/api/v9/users/@me",
@@ -121,44 +122,75 @@ def verify_token():
         )
         if response.status_code == 200:
             user = response.json()
+            bot_user_id = user['id']
             print(f"{Fore.GREEN}[+] Logged in as {user['username']} ({user['id']})!")
-            return user
+            return True
         else:
             print(f"{Fore.RED}[-] Invalid token! Status: {response.status_code}")
-            return None
+            return False
     except Exception as e:
         print(f"{Fore.RED}[-] Token verification error: {e}")
-        return None
+        return False
 
-# ----------------- ACTUALIZAR STATUS POR COMANDO -----------------
+# ----------------- ACTUALIZAR STATUS -----------------
 def update_status(new_status=None, new_text=None):
-    """Actualiza las variables globales de estado"""
     global current_status, current_custom_text
-    
     if new_status:
         current_status = new_status
     if new_text:
         current_custom_text = new_text
-    
     print(f"{Fore.CYAN}[*] Status updated to: {current_status}")
     print(f"{Fore.CYAN}[*] Custom text: {current_custom_text}")
 
-# ----------------- GATEWAY WEBSOCKET CON COMANDOS DM -----------------
+# ----------------- ENVIAR MENSAJE DM POR HTTP -----------------
+def send_dm_message(user_id, message):
+    """Envía un mensaje directo usando HTTP con anti-detección"""
+    try:
+        # Crear canal DM
+        dm_channel = curl_requests.post(
+            "https://discord.com/api/v9/users/@me/channels",
+            json={"recipient_id": user_id},
+            headers=build_headers(),
+            impersonate="chrome120",
+            timeout=10
+        )
+        if dm_channel.status_code != 200:
+            print(f"{Fore.RED}[-] Failed to create DM: {dm_channel.status_code} - {dm_channel.text}")
+            return False
+        
+        channel_id = dm_channel.json()["id"]
+        
+        # Enviar mensaje
+        send_msg = curl_requests.post(
+            f"https://discord.com/api/v9/channels/{channel_id}/messages",
+            json={"content": message},
+            headers=build_headers(),
+            impersonate="chrome120",
+            timeout=10
+        )
+        if send_msg.status_code == 200:
+            print(f"{Fore.GREEN}[+] DM sent to {user_id}")
+            return True
+        else:
+            print(f"{Fore.RED}[-] Failed to send DM: {send_msg.status_code} - {send_msg.text}")
+            return False
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error sending DM: {e}")
+        return False
+
+# ----------------- GATEWAY WEBSOCKET CON COMANDOS -----------------
 async def discord_gateway():
-    """Conecta al gateway con soporte para comandos por DM"""
-    
     import websockets
-    
     uri = "wss://gateway.discord.gg/?v=10&encoding=json"
     
     try:
         async with websockets.connect(uri) as ws:
-            # Recibir hello
+            # Hello
             hello = json.loads(await ws.recv())
             heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
             print(f"{Fore.CYAN}[*] Heartbeat interval: {heartbeat_interval}s")
 
-            # Tarea de heartbeat CON JITTER
+            # Heartbeat con jitter
             async def heartbeat_task():
                 while True:
                     jitter = random.uniform(-0.3, 0.3)
@@ -166,17 +198,16 @@ async def discord_gateway():
                     await ws.send(json.dumps({"op": 1, "d": None}))
                     local_time = get_local_time()
                     print(f"{Fore.GREEN}[{local_time}] Heartbeat sent")
-
+            
             asyncio.create_task(heartbeat_task())
 
-            # IDENTIFY con presencia
+            # Identify (presencia)
             activity = {
                 "name": "Custom Status",
                 "type": 4,
                 "state": current_custom_text,
                 "id": "custom"
             }
-            
             identify = {
                 "op": 2,
                 "d": {
@@ -195,11 +226,8 @@ async def discord_gateway():
                     "large_threshold": 250
                 }
             }
-            
             await ws.send(json.dumps(identify))
             print(f"{Fore.GREEN}[+] Identified with Discord!")
-            print(f"{Fore.CYAN}[*] Status: {current_status}")
-            print(f"{Fore.CYAN}[*] Custom Status: {current_custom_text}")
 
             # Esperar READY
             ready_event = await ws.recv()
@@ -207,95 +235,99 @@ async def discord_gateway():
             if ready_data.get("t") == "READY":
                 user_id = ready_data['d']['user']['id']
                 print(f"{Fore.GREEN}[+] ✅ READY! User ID: {user_id}")
-                print(f"{Fore.GREEN}[+] 🟢 You are NOW ONLINE!")
-                print(f"{Fore.CYAN}[*] 💬 Send 'rezty on' to set online")
+                print(f"{Fore.GREEN}[+] 🟢 You are ONLINE!")
+                print(f"{Fore.CYAN}[*] 💬 Send 'rezty on' or 'rezy on' to set online")
                 print(f"{Fore.CYAN}[*] 💬 Send 'rezty idle' to set idle")
                 print(f"{Fore.CYAN}[*] 💬 Send 'rezty dnd' to set DND")
                 print(f"{Fore.CYAN}[*] 💬 Send 'rezty offline' to set offline")
                 print(f"{Fore.CYAN}[*] 💬 Send 'rezty status: texto' to change custom status")
 
-            # Bucle principal - ESCUCHA COMANDOS
+            # Bucle principal
             while True:
                 try:
                     msg = await ws.recv()
                     data = json.loads(msg)
-                    op_code = data.get("op")
+                    op = data.get("op")
                     
-                    if op_code == 11:  # Heartbeat ACK
-                        pass
-                    elif op_code == 7:  # Reconnect
+                    if op == 11:
+                        pass  # Heartbeat ACK
+                    elif op == 7:
                         print(f"{Fore.YELLOW}[!] Reconnect requested")
                         break
-                    elif op_code == 9:  # Invalid session
+                    elif op == 9:
                         print(f"{Fore.RED}[-] Invalid session")
                         break
-                    elif op_code == 0:  # Dispatch event
+                    elif op == 0:
                         event_type = data.get("t")
                         
-                        # --- PROCESAR MENSAJES DIRECTOS ---
+                        # --- DETECTAR MENSAJES DIRECTOS ---
                         if event_type == "MESSAGE_CREATE":
                             msg_data = data.get("d", {})
-                            channel_id = msg_data.get("channel_id")
-                            content = msg_data.get("content", "").lower().strip()
-                            author_id = msg_data.get("author", {}).get("id")
-                            
-                            # Verificar si es DM (channel_id == author_id en DMs)
-                            if channel_id == author_id:
-                                print(f"{Fore.YELLOW}[*] DM from {author_id}: {content}")
+                            # Es DM si NO tiene guild_id
+                            if msg_data.get("guild_id") is None:
+                                author = msg_data.get("author", {})
+                                author_id = author.get("id")
+                                content = msg_data.get("content", "").strip()
+                                channel_id = msg_data.get("channel_id")
                                 
-                                # Procesar comandos
-                                if content.startswith("rezty "):
-                                    command = content[6:].strip()
+                                # Ignorar mensajes del propio bot
+                                if author_id == bot_user_id:
+                                    continue
+                                
+                                print(f"{Fore.YELLOW}[*] DM from {author.get('username')} ({author_id}): {content}")
+                                
+                                # --- PROCESAR COMANDOS (soporta "rezty" y "rezy") ---
+                                lower_content = content.lower()
+                                if lower_content.startswith("rezty ") or lower_content.startswith("rezy "):
+                                    # Extraer comando
+                                    parts = lower_content.split(" ", 1)
+                                    if len(parts) < 2:
+                                        continue
+                                    command = parts[1].strip()
                                     
-                                    # Comando: rezty on/offline/idle/dnd
+                                    # Comandos de estado
                                     if command == "on":
                                         update_status("online")
                                         await send_presence_update(ws)
-                                        await send_dm_response(ws, author_id, "✅ Status set to ONLINE")
+                                        send_dm_message(author_id, "✅ Status set to **ONLINE**")
                                     
                                     elif command == "idle":
                                         update_status("idle")
                                         await send_presence_update(ws)
-                                        await send_dm_response(ws, author_id, "💤 Status set to IDLE")
+                                        send_dm_message(author_id, "💤 Status set to **IDLE**")
                                     
                                     elif command == "dnd":
                                         update_status("dnd")
                                         await send_presence_update(ws)
-                                        await send_dm_response(ws, author_id, "🚫 Status set to DO NOT DISTURB")
+                                        send_dm_message(author_id, "🚫 Status set to **DO NOT DISTURB**")
                                     
                                     elif command == "offline":
                                         update_status("invisible")
                                         await send_presence_update(ws)
-                                        await send_dm_response(ws, author_id, "🌙 Status set to OFFLINE (invisible)")
+                                        send_dm_message(author_id, "🌙 Status set to **OFFLINE** (invisible)")
                                     
-                                    # Comando: rezty status: nuevo texto
                                     elif command.startswith("status:"):
                                         new_text = command[7:].strip()
                                         if new_text:
                                             update_status(None, new_text)
                                             await send_presence_update(ws)
-                                            await send_dm_response(ws, author_id, f"📝 Custom status changed to: {new_text}")
+                                            send_dm_message(author_id, f"📝 Custom status changed to: **{new_text}**")
                                         else:
-                                            await send_dm_response(ws, author_id, "❌ Please provide text: `rezty status: nuevo texto`")
+                                            send_dm_message(author_id, "❌ Please provide text: `rezty status: nuevo texto`")
                                     
-                                    # Comando: rezty help
                                     elif command == "help":
                                         help_msg = (
                                             "📖 **Comandos disponibles:**\n"
-                                            "• `rezty on` - Set online\n"
+                                            "• `rezty on` / `rezy on` - Set online\n"
                                             "• `rezty idle` - Set idle\n"
                                             "• `rezty dnd` - Set Do Not Disturb\n"
                                             "• `rezty offline` - Set offline (invisible)\n"
                                             "• `rezty status: texto` - Change custom status text\n"
                                             "• `rezty help` - Show this message"
                                         )
-                                        await send_dm_response(ws, author_id, help_msg)
+                                        send_dm_message(author_id, help_msg)
                                     else:
-                                        await send_dm_response(ws, author_id, "❌ Unknown command. Send `rezty help` for available commands.")
-
-                    # Enviar presencia actualizada (reconexión)
-                    if op_code == 10:  # Hello
-                        print(f"{Fore.CYAN}[*] Reconnecting...")
+                                        send_dm_message(author_id, "❌ Unknown command. Send `rezty help` for available commands.")
 
                 except websockets.exceptions.ConnectionClosed:
                     print(f"{Fore.YELLOW}[!] Connection closed")
@@ -303,23 +335,20 @@ async def discord_gateway():
                 except Exception as e:
                     print(f"{Fore.RED}[-] Error in gateway: {e}")
                     break
-
     except Exception as e:
-        print(f"{Fore.RED}[-] Failed to connect to gateway: {e}")
+        print(f"{Fore.RED}[-] Failed to connect: {e}")
         await asyncio.sleep(5)
 
-# ----------------- FUNCIONES DE ENVIO POR DM -----------------
+# ----------------- FUNCION PARA ACTUALIZAR PRESENCIA POR WS -----------------
 async def send_presence_update(ws):
-    """Envía una actualización de presencia al WebSocket"""
     activity = {
         "name": "Custom Status",
         "type": 4,
         "state": current_custom_text,
         "id": "custom"
     }
-    
-    presence_update = {
-        "op": 3,  # Presence Update
+    presence = {
+        "op": 3,
         "d": {
             "status": current_status,
             "afk": False,
@@ -327,64 +356,22 @@ async def send_presence_update(ws):
             "since": 0
         }
     }
-    
-    await ws.send(json.dumps(presence_update))
-    print(f"{Fore.GREEN}[+] Presence updated to: {current_status}")
+    await ws.send(json.dumps(presence))
+    print(f"{Fore.GREEN}[+] Presence updated to {current_status} with text '{current_custom_text}'")
 
-async def send_dm_response(ws, user_id, message):
-    """Envía un mensaje directo al usuario que envió el comando"""
-    # Crear channel DM
-    create_dm = {
-        "op": 0,
-        "d": {
-            "recipient_id": user_id
-        }
-    }
-    # Nota: Para enviar mensajes se necesita una petición HTTP, no WebSocket
-    # Vamos a usar HTTP para enviar la respuesta
-    try:
-        # Primero obtener el DM channel
-        dm_response = curl_requests.post(
-            "https://discord.com/api/v9/users/@me/channels",
-            json={"recipient_id": user_id},
-            headers=build_headers(),
-            impersonate="chrome120"
-        )
-        
-        if dm_response.status_code == 200:
-            channel_id = dm_response.json()["id"]
-            # Enviar mensaje
-            send_response = curl_requests.post(
-                f"https://discord.com/api/v9/channels/{channel_id}/messages",
-                json={"content": message},
-                headers=build_headers(),
-                impersonate="chrome120"
-            )
-            if send_response.status_code == 200:
-                print(f"{Fore.GREEN}[+] DM sent to {user_id}")
-            else:
-                print(f"{Fore.RED}[-] Failed to send DM: {send_response.status_code}")
-        else:
-            print(f"{Fore.RED}[-] Failed to create DM channel: {dm_response.status_code}")
-    except Exception as e:
-        print(f"{Fore.RED}[-] Error sending DM: {e}")
-
-# ----------------- RECONEXION AUTOMATICA CON BACKOFF -----------------
+# ----------------- MAIN -----------------
 async def main():
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
-    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot (With Commands)")
+    print(f"{Fore.YELLOW}[*] Starting Discord Self-Bot (Commands)")
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
     print(f"{Fore.CYAN}[*] Token: {TOKEN[:10]}...{TOKEN[-10:]}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
     print(f"{Fore.CYAN}[*] Status Mode: {STATUS}")
     print(f"{Fore.CYAN}[*] Local time: {get_local_time()}")
     
-    user = verify_token()
-    if not user:
+    if not verify_token():
         print(f"{Fore.RED}[!] Token verification failed. Retrying in 30s...")
         await asyncio.sleep(30)
-    else:
-        print(f"{Fore.GREEN}[+] Bot ready! Commands active!")
     
     retry_count = 0
     while True:
@@ -395,17 +382,14 @@ async def main():
             print(f"{Fore.RED}[-] Gateway error: {e}")
             retry_count += 1
         
-        # Backoff exponencial con máximo de 60s
         wait_time = min(5 + (retry_count * 5), 60)
         print(f"{Fore.YELLOW}[!] Reconnecting in {wait_time} seconds...")
         await asyncio.sleep(wait_time)
 
-# ----------------- EJECUTAR -----------------
 if __name__ == "__main__":
     try:
         import websockets
     except ImportError:
         os.system("pip install websockets")
         import websockets
-    
     asyncio.run(main())
