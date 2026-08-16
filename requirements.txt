@@ -1,4 +1,4 @@
-curl_cffi
-colorama
-pytz
 websockets
+pytz
+colorama
+requests
