@@ -282,7 +282,7 @@ async def discord_gateway():
 # ----------------- RECONEXION -----------------
 async def main():
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
-    print(f"{Fore.YELLOW}[*] Bot SelfBot - Versión Corregida")
+    print(f"{Fore.YELLOW}[*] Bot SelfBot - Versión Estable (con reconexión)")
     print(f"{Fore.YELLOW}[*] ═══════════════════════════════════")
     print(f"{Fore.CYAN}[*] Token: {TOKEN[:10]}...{TOKEN[-10:]}")
     print(f"{Fore.CYAN}[*] Status Text: {CUSTOM_STATUS_TEXT}")
@@ -294,13 +294,15 @@ async def main():
         print(f"{Fore.RED}[!] Token inválido. Revisa tu variable DISCORD_TOKEN.")
         await asyncio.sleep(60)
 
+    attempt = 0
     while True:
         try:
             await discord_gateway()
+            attempt = 0  # Resetear si la conexión fue exitosa
         except Exception as e:
             print(f"{Fore.RED}[-] Error crítico: {e}")
-        print(f"{Fore.YELLOW}[!] Reconectando en 5 segundos...")
-        await asyncio.sleep(5)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            attempt += 1
+            # Espera exponencial: 5s, 10s, 20s, 30s... máximo 120s
+            wait = min(5 * (2 ** (attempt - 1)), 120)
+            print(f"{Fore.YELLOW}[!] Reconectando en {wait} segundos... (intento {attempt})")
+            await asyncio.sleep(wait)
