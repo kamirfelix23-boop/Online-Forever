@@ -306,5 +306,5 @@ async def main():
             wait = min(5 * (2 ** (attempt - 1)), 120)
             print(f"{Fore.YELLOW}[!] Reconectando en {wait} segundos... (intento {attempt})")
             await asyncio.sleep(wait)
-            if __name__ == "__main__":
+    if __name__ == "__main__":
     asyncio.run(main())
